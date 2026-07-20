@@ -14,6 +14,7 @@ import live.minehub.polarpaper.util.EntitiesWorldAccess;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.ChunkPos;
 import org.bukkit.*;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.craftbukkit.CraftWorld;
@@ -156,10 +157,13 @@ public class Polar {
             return null;
         }
 
-        return createWorld(new PolarStreamingGenerator(config, source, worldAccess), worldName).thenComposeAsync(world -> {
+        PolarStreamingGenerator generator = new PolarStreamingGenerator(config, source, worldAccess);
+        generator.deferLevelPreparation(true);
+        return createWorld(generator, worldName).thenCompose(world -> {
             if (world == null) return CompletableFuture.completedFuture(null);
+            CompletableFuture<@Nullable World> loadedWorld;
             if (worldBytes != null && worldBytes.length > 0) {
-                return PolarStreamLoader.stream(worldBytes, world, worldAccess)
+                loadedWorld = PolarStreamLoader.stream(worldBytes, world, worldAccess)
                         .handle((_, ex) -> {
                             if (ex != null) {
                                 LOGGER.error("Failed to load world " + worldName, ex);
@@ -168,8 +172,10 @@ public class Polar {
 
                             return world;
                         });
+            } else {
+                loadedWorld = CompletableFuture.completedFuture(world);
             }
-            return CompletableFuture.completedFuture(world);
+            return loadedWorld.thenCompose(Polar::prepareWorld);
         }).whenComplete((result, ex) -> {
             if (ex != null || result == null) return;
             setLoading(result.getKey(), false);
@@ -187,7 +193,8 @@ public class Polar {
     public static CompletableFuture<@Nullable World> createWorld(@NotNull PolarWorld polarWorld, @NotNull String worldName, @NotNull Config config, @NotNull PolarWorldAccess worldAccess) {
         PolarStreamingGenerator generator = new PolarStreamingGenerator(config, null, worldAccess);
         generator.setUserData(polarWorld.userData());
-        return createWorld(generator, worldName).thenComposeAsync(world -> {
+        generator.deferLevelPreparation(true);
+        return createWorld(generator, worldName).thenCompose(world -> {
             if (world == null) return CompletableFuture.completedFuture(null);
             ServerLevel level = ((CraftWorld) world).getHandle();
             List<CompletableFuture<Void>> futures = new ArrayList<>();
@@ -210,7 +217,9 @@ public class Polar {
                 }));
             }
 
-            return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).thenApply(_ -> world);
+            return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                    .thenCompose(_ -> installPreLitBoundary(world, polarWorld))
+                    .thenCompose(_ -> prepareWorld(world));
         }).whenComplete((world, ex) -> {
             if (world != null) {
                 setLoading(world.getKey(), false);
@@ -265,6 +274,70 @@ public class Polar {
                     // chunks should be allowed to unload and be removed from memory
                     world.setAutoSave(false);
                 });
+    }
+
+    private static CompletableFuture<@Nullable World> prepareWorld(@Nullable World world) {
+        if (world == null) return CompletableFuture.completedFuture(null);
+        CompletableFuture<@Nullable World> future = new CompletableFuture<>();
+        Bukkit.getGlobalRegionScheduler().execute(PolarPaper.getPlugin(), () -> {
+            try {
+                CraftWorld craftWorld = (CraftWorld) world;
+                craftWorld.getHandle().getServer().prepareLevel(craftWorld.getHandle());
+                future.complete(world);
+            } catch (Throwable e) {
+                future.completeExceptionally(e);
+            }
+        });
+        return future;
+    }
+
+    private static CompletableFuture<Void> installPreLitBoundary(@NotNull World world, @NotNull PolarWorld polarWorld) {
+        if (polarWorld.numChunks() == 0) return CompletableFuture.completedFuture(null);
+
+        int minChunkX = Integer.MAX_VALUE;
+        int maxChunkX = Integer.MIN_VALUE;
+        int minChunkZ = Integer.MAX_VALUE;
+        int maxChunkZ = Integer.MIN_VALUE;
+        Set<Long> savedChunks = new HashSet<>(polarWorld.numChunks());
+        for (PolarChunk chunk : polarWorld.chunks()) {
+            minChunkX = Math.min(minChunkX, chunk.x());
+            maxChunkX = Math.max(maxChunkX, chunk.x());
+            minChunkZ = Math.min(minChunkZ, chunk.z());
+            maxChunkZ = Math.max(maxChunkZ, chunk.z());
+            savedChunks.add(chunkKey(chunk.x(), chunk.z()));
+        }
+
+        int padding = world.getViewDistance() + 2;
+        int expectedBoundaryChunks = (maxChunkX - minChunkX + 1 + padding * 2)
+                * (maxChunkZ - minChunkZ + 1 + padding * 2) - savedChunks.size();
+        List<CompletableFuture<Void>> futures = new ArrayList<>(Math.max(0, expectedBoundaryChunks));
+        ServerLevel level = ((CraftWorld) world).getHandle();
+
+        for (int chunkX = minChunkX - padding; chunkX <= maxChunkX + padding; chunkX++) {
+            for (int chunkZ = minChunkZ - padding; chunkZ <= maxChunkZ + padding; chunkZ++) {
+                if (savedChunks.contains(chunkKey(chunkX, chunkZ))) continue;
+
+                NoUnloadLevelChunk emptyChunk = new NoUnloadLevelChunk(level, new ChunkPos(chunkX, chunkZ));
+                boolean[] emptySections = new boolean[emptyChunk.getSectionsCount()];
+                Arrays.fill(emptySections, true);
+                emptyChunk.starlight$setBlockEmptinessMap(emptySections.clone());
+                emptyChunk.starlight$setSkyEmptinessMap(emptySections);
+                emptyChunk.setLightCorrect(true);
+
+                int finalChunkX = chunkX;
+                int finalChunkZ = chunkZ;
+                futures.add(TaskFutures.runRegion(PolarPaper.getPlugin(), world, finalChunkX, finalChunkZ, () -> {
+                    PolarStreamLoader.insertChunk(level, emptyChunk);
+                    return null;
+                }));
+            }
+        }
+
+        return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+    }
+
+    private static long chunkKey(int chunkX, int chunkZ) {
+        return (chunkX & 0xFFFFFFFFL) | ((chunkZ & 0xFFFFFFFFL) << 32);
     }
 
     public static void stopAutoSaveTask(NamespacedKey worldKey) {

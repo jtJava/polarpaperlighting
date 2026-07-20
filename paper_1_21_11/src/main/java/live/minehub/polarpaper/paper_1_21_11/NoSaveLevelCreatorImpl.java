@@ -10,6 +10,7 @@ import com.mojang.serialization.Lifecycle;
 import io.papermc.paper.world.PaperWorldLoader;
 import live.minehub.polarpaper.core.NoSaveLevelCreator;
 import live.minehub.polarpaper.core.config.Config;
+import live.minehub.polarpaper.core.generator.PolarStreamingGenerator;
 import live.minehub.polarpaper.core.util.TaskFutures;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Registry;
@@ -247,7 +248,10 @@ public class NoSaveLevelCreatorImpl implements NoSaveLevelCreator {
             craftServer.getServer().initWorld(serverLevel, primaryLevelData, primaryLevelData.worldGenOptions());
             // Paper - Put world into worldlist before initing the world; move up
 
-            craftServer.getServer().prepareLevel(serverLevel);
+            if (!(finalChunkGenerator instanceof PolarStreamingGenerator streamingGenerator)
+                    || !streamingGenerator.deferLevelPreparation()) {
+                craftServer.getServer().prepareLevel(serverLevel);
+            }
 
             serverLevel.serverLevelData.setSpawn(LevelData.RespawnData.of(serverLevel.dimension(), new BlockPos(spawnPos.getBlockX(), spawnPos.getBlockY(), spawnPos.getBlockZ()), spawnPos.getYaw(), spawnPos.getPitch()));
 

@@ -17,6 +17,7 @@ public class PolarStreamingGenerator extends PolarGenerator {
     private Short version = null;
     private Integer dataVersion = null;
     private byte[] userData = new byte[0];
+    private boolean deferLevelPreparation;
     public PolarStreamingGenerator(Config config, PolarSource source, PolarWorldAccess worldAccess) {
         super(config, source, worldAccess);
     }
@@ -44,6 +45,14 @@ public class PolarStreamingGenerator extends PolarGenerator {
 
     public Integer getDataVersion() {
         return dataVersion;
+    }
+
+    public boolean deferLevelPreparation() {
+        return deferLevelPreparation;
+    }
+
+    public void deferLevelPreparation(boolean deferLevelPreparation) {
+        this.deferLevelPreparation = deferLevelPreparation;
     }
 
     public void setDataVersion(Integer dataVersion) {

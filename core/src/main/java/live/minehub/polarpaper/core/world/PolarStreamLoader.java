@@ -75,7 +75,6 @@ public class PolarStreamLoader {
             GET_OR_CREATE_CHUNK_HOLDER_HANDLE = MethodHandles
                     .privateLookupIn(ChunkHolderManager.class, MethodHandles.lookup())
                     .findVirtual(ChunkHolderManager.class, "getOrCreateChunkHolder", MethodType.methodType(NewChunkHolder.class, int.class, int.class));
-
             CURRENT_CHUNK_HANDLE = MethodHandles
                     .privateLookupIn(NewChunkHolder.class, MethodHandles.lookup())
                     .findVarHandle(NewChunkHolder.class, "currentChunk", ChunkAccess.class);
@@ -226,9 +225,6 @@ public class PolarStreamLoader {
         boolean finalLightPresent = lightPresent;
 
         return TaskFutures.runRegion(plugin, world, chunkX, chunkZ, () -> {
-            insertChunk(serverLevel, newLevelChunk);
-            worldAccess.loadChunkData(world, newLevelChunk, userData);
-
             if (finalLightPresent) {
                 Boolean[] emptinessMap = StarLightEngine.getEmptySectionsForChunk(newLevelChunk);
                 boolean[] emptinessMapPrim = new boolean[emptinessMap.length];
@@ -244,6 +240,10 @@ public class PolarStreamLoader {
                 lightChunk(serverLevel, newLevelChunk);
             }
             newLevelChunk.setLightCorrect(true);
+
+            insertChunk(serverLevel, newLevelChunk);
+            worldAccess.loadChunkData(world, newLevelChunk, userData);
+
             return null;
         });
     }
@@ -254,34 +254,47 @@ public class PolarStreamLoader {
         ChunkTaskScheduler chunkTaskScheduler = serverLevel.moonrise$getChunkTaskScheduler();
         ChunkHolderManager chunkHolderManager = chunkTaskScheduler.chunkHolderManager;
 
-        // Begin reflection hell :D
-        ReentrantAreaLock.Node lock = chunkHolderManager.ticketLockArea.lock(chunkX, chunkZ);
-        ReentrantAreaLock.Node lock1 = chunkTaskScheduler.schedulingLockArea.lock(chunkX, chunkZ);
+        // Do not expose a partially initialized holder. Once the scheduling lock is
+        // released, Moonrise may create a ChunkLightTask using the holder's chunk.
+        ReentrantAreaLock.Node ticketLock = null;
+        ReentrantAreaLock.Node schedulingLock = null;
         NewChunkHolder newChunkHolder;
         try {
+            ticketLock = chunkHolderManager.ticketLockArea.lock(chunkX, chunkZ);
+            schedulingLock = chunkTaskScheduler.schedulingLockArea.lock(chunkX, chunkZ);
             newChunkHolder = (NewChunkHolder) GET_OR_CREATE_CHUNK_HOLDER_HANDLE.invoke(chunkHolderManager, chunkX, chunkZ);
+
+            if (newChunkHolder.hasGenerationTask() || newChunkHolder.getRequestedGenStatus() != null) {
+                throw new IllegalStateException("Chunk " + chunkX + "," + chunkZ + " was requested before Polar installed its saved data");
+            }
+
+            newLevelChunk.needsDecoration = false;
+            newLevelChunk.mustNotSave = true;
+            CURRENT_CHUNK_HANDLE.set(newChunkHolder, newLevelChunk);
+            CURRENT_GEN_STATUS_HANDLE.set(newChunkHolder, ChunkStatus.FULL);
+            newLevelChunk.moonrise$setChunkHolder(newChunkHolder);
+
+            // Populate every status up to and including FULL
+            // This mirrors what replaceProtoChunk() does, but for all statuses including FULL
+            NewChunkHolder.ChunkCompletion[] chunkCompletions = (NewChunkHolder.ChunkCompletion[]) CHUNK_COMPLETIONS_HANDLE.get(newChunkHolder);
+            for (ChunkStatus status : ALL_STATUSES) {
+                NewChunkHolder.ChunkCompletion completion = new NewChunkHolder.ChunkCompletion(newLevelChunk, status);
+                CHUNK_COMPLETION_ARRAY_HANDLE.setVolatile(chunkCompletions, status.getIndex(), completion);
+
+                if (status == ChunkStatus.FULL) {
+                    LAST_CHUNK_COMPLETION_HANDLE.set(newChunkHolder, completion);
+                }
+            }
+
+            chunkTaskScheduler.schedulingLockArea.unlock(schedulingLock);
+            schedulingLock = null;
+            chunkHolderManager.ticketLockArea.unlock(ticketLock);
+            ticketLock = null;
         } catch (Throwable e) {
             throw new RuntimeException(e);
-        }
-        chunkTaskScheduler.schedulingLockArea.unlock(lock1);
-        chunkHolderManager.ticketLockArea.unlock(lock);
-
-        newLevelChunk.needsDecoration = false;
-        newLevelChunk.mustNotSave = true;
-        CURRENT_CHUNK_HANDLE.set(newChunkHolder, newLevelChunk);
-        CURRENT_GEN_STATUS_HANDLE.set(newChunkHolder, ChunkStatus.FULL);
-        newLevelChunk.moonrise$setChunkHolder(newChunkHolder);
-
-        // Populate every status up to and including FULL
-        // This mirrors what replaceProtoChunk() does, but for all statuses including FULL
-        NewChunkHolder.ChunkCompletion[] chunkCompletions = (NewChunkHolder.ChunkCompletion[]) CHUNK_COMPLETIONS_HANDLE.get(newChunkHolder);
-        for (ChunkStatus status : ALL_STATUSES) {
-            NewChunkHolder.ChunkCompletion completion = new NewChunkHolder.ChunkCompletion(newLevelChunk, status);
-            CHUNK_COMPLETION_ARRAY_HANDLE.setVolatile(chunkCompletions, status.getIndex(), completion);
-
-            if (status == ChunkStatus.FULL) {
-                LAST_CHUNK_COMPLETION_HANDLE.set(newChunkHolder, completion);
-            }
+        } finally {
+            if (schedulingLock != null) chunkTaskScheduler.schedulingLockArea.unlock(schedulingLock);
+            if (ticketLock != null) chunkHolderManager.ticketLockArea.unlock(ticketLock);
         }
 
         CompletableFuture.runAsync(() -> {
