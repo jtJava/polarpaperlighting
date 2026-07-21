@@ -51,7 +51,17 @@ For the in-memory `PolarWorld` path used by the Arena server, the patch installs
 
 In production, padding was 14 chunks. Depending on arena size, 1,176-1,744 boundary chunks were installed in 22-37 ms. Total Arena world load time remained approximately 133-157 ms, and no fallback generation appeared within the tested player-visible area.
 
-The boundary optimization currently applies only to the in-memory `PolarWorld` overload used by the live Arena server. The byte-stream `PolarSource` flow receives the preparation-race fix but does not currently install boundary chunks.
+The boundary optimization currently applies only to the in-memory `PolarWorld` overload used by the live Arena server. The byte-stream `PolarSource` flow receives the preparation-race fix but does not install a finite boundary.
+
+## Arbitrary missing-chunk fallback
+
+The finite boundary keeps the ordinary arena view cheap, but it cannot cover a player or plugin that requests chunks beyond the padded rectangle. Polar now also replaces the vanilla NMS generator delegate for `PolarStreamingGenerator` worlds with a version-specific pre-lit fallback.
+
+At Paper's `NOISE` generation step, the fallback creates a fresh coordinate-specific `NoUnloadLevelChunk`, marks it non-saving and light-correct, installs all-empty Starlight section maps, primes its heightmaps, and returns it as a read-only `ImposterProtoChunk`. A `LevelChunk` reports persisted status `FULL`, so Moonrise's later `ChunkLightTask` takes the existing-light path (`forceLoadInChunk` plus edge checks) rather than the full `lightChunk` path that caused the bulk propagation. Edge reconciliation can still perform bounded propagation where adjacent stored light disagrees. `ChunkFullTask` already recognizes `ImposterProtoChunk` and unwraps the contained `LevelChunk` instead of constructing a second chunk.
+
+This is an empty-chunk *template path*, not one shared chunk object: every requested coordinate needs its own chunk because positions, holders, lifecycle state, and future block changes are coordinate-specific. Empty skylight uses Starlight's implicit representation, so allocating full-bright nibble arrays for every fallback is unnecessary.
+
+The Bukkit generator exposes the fallback only after the version adapter is bound to the constructed `ServerLevel` and Polar has installed the saved chunks (and finite boundary, where applicable). Before that activation gate, `shouldGenerateNoise` remains false. This prevents a concurrent request from asking the fallback to use an unbound level or replacing a saved Polar chunk during installation.
 
 ## Chunk-holder insertion changes
 
@@ -66,15 +76,30 @@ Stored Starlight nibble arrays and emptiness maps are restored, and `lightCorrec
 
 An earlier approach attempted to cancel a holder generation task. It was removed because cancellation is a no-op once execution begins and the completion could later overwrite the Polar chunk. An extra `isLightCorrect` field was also removed because Paper's `ChunkAccess` field is already volatile.
 
-## Rejected fallback approach
+## Rejected Bukkit-only fallback approach
 
-A prototype marked fallback proto-chunks as persisted `LIGHT` inside Bukkit's `generateNoise` callback. This is not durable: `ChunkUpgradeGenericStatusTask` overwrites the proto-chunk's persisted status after each later generation step, including `INITIALIZE_LIGHT`. Pre-installing FULL boundary chunks avoids that race.
+A prototype marked fallback proto-chunks as persisted `LIGHT` inside Bukkit's `generateNoise` callback. This is not durable: `ChunkUpgradeGenericStatusTask` overwrites the proto-chunk's persisted status after each later generation step, including `INITIALIZE_LIGHT`. The final arbitrary fallback instead replaces the chunk object from the wrapped NMS generator's `fillFromNoise`, which is the first hook where Paper preserves a replacement `ChunkAccess`. Pre-installing FULL boundary chunks remains the zero-task fast path for nearby chunks.
 
 Do not call mapped helpers such as `ChunkPos.pack(int, int)` from shared plugin code. That method compiled against the development mappings but was absent under the production UniverseSpigot runtime mappings. The final implementation uses local bit packing for coordinate-set keys.
 
 ## API compatibility
 
 No existing public method signatures or call contracts were changed. The original `NoSaveLevelCreator`, `VersionUtil`, `TaskFutures`, and `Polar#createWorld` signatures remain intact. A small state flag was added to `PolarStreamingGenerator` so the version-specific world creators can distinguish Polar's deferred internal flow from ordinary custom-generator calls.
+
+## Async world configuration regression
+
+A later profile showed `SpigotWorldConfig`, `PaperConfigurations#createWorldConfig`, and the rest of `ServerLevel` construction running on the server thread even for worlds configured with `async: true`. This was a Polar regression rather than a Paper configuration-cache problem.
+
+Commit `f809c64` originally made the option dispatch world construction to Bukkit's async scheduler and returned only registration and initialization to the server thread. Commit `6a07f99` removed the `config.async()` dispatch and moved `new ServerLevel(...)` inside the global-thread supplier. The multi-version world creators retained that behavior, leaving the config property readable and writable but functionally unused.
+
+The follow-up fix restores the intended split without sharing configuration between worlds:
+
+1. `Polar#createWorld(PolarGenerator, String)` checks that world's existing `Config#async` value.
+2. With async loading enabled, it invokes the version-specific level creator on Polar's async scheduler.
+3. The version-specific creator constructs that world's `ServerLevel` on the caller thread. Paper creates a distinct Spigot and Paper world configuration during this constructor.
+4. If construction occurred asynchronously, only `addLevel`, `initWorld`, spawn setup, and optional preparation are handed to the global scheduler.
+
+No configuration instance is cached or reused. Async construction remains opt-in because the entire `ServerLevel` constructor, not only its configuration subcalls, runs off-thread; this matches the behavior and warning attached to the original experimental option.
 
 ## Validation
 
@@ -83,10 +108,11 @@ No existing public method signatures or call contracts were changed. The origina
 - `shadowJar` succeeds.
 - `git diff --check` succeeds.
 - Production logs confirmed stored light for all tested saved chunks, successful boundary installation, no holder-race exceptions, and no fallback chunks inside the padded area.
+- The arbitrary NMS fallback compiles against both maintained version adapters and has been traced against Paper's `CustomChunkGenerator`, `ChunkLightTask`, `ImposterProtoChunk`, and `ChunkFullTask` implementations. It still needs a production Spark comparison beyond the finite boundary.
 
 ## Review considerations
 
 - Pre-lit boundaries trade memory for avoiding asynchronous lighting. The live server already generated a similar number of fallback chunks after players joined, but the patch creates the full padded rectangle up front.
 - `PolarStreamLoader#insertChunk` currently primes heightmaps and initializes entity-chunk state for boundary chunks too. If memory or non-lighting worker cost becomes material, a specialized empty-boundary insertion path could avoid unnecessary initialization after verifying packet and unload behavior.
-- The padding assumes arena players remain within the saved map bounds. Moving farther than the padded boundary will resume normal empty chunk generation and lighting.
+- Moving beyond the padded boundary still schedules the normal chunk status pipeline, but the new NMS fallback supplies an already-light-correct FULL empty chunk. Expect lightweight existing-light loading and edge checks there instead of `SkyStarLightEngine#lightChunk`; edge mismatches can still cause bounded Starlight propagation.
 - Consider generalizing boundary installation to the byte-stream `PolarSource` path if that path is used in production.

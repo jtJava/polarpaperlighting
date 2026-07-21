@@ -175,7 +175,11 @@ public class Polar {
             } else {
                 loadedWorld = CompletableFuture.completedFuture(world);
             }
-            return loadedWorld.thenCompose(Polar::prepareWorld);
+            return loadedWorld.thenCompose(loaded -> {
+                if (loaded == null) return CompletableFuture.completedFuture(null);
+                generator.enableEmptyChunkFallback();
+                return prepareWorld(loaded);
+            });
         }).whenComplete((result, ex) -> {
             if (ex != null || result == null) return;
             setLoading(result.getKey(), false);
@@ -219,7 +223,10 @@ public class Polar {
 
             return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
                     .thenCompose(_ -> installPreLitBoundary(world, polarWorld))
-                    .thenCompose(_ -> prepareWorld(world));
+                    .thenCompose(_ -> {
+                        generator.enableEmptyChunkFallback();
+                        return prepareWorld(world);
+                    });
         }).whenComplete((world, ex) -> {
             if (world != null) {
                 setLoading(world.getKey(), false);
@@ -259,7 +266,19 @@ public class Polar {
                 .environment(config.environment())
                 .generator(generator);
 
-        return VersionUtil.createNoSaveLevel(worldCreator, config.spawn(), config.difficulty(), config.gamerules(), config.time())
+        CompletableFuture<@Nullable World> levelFuture;
+        if (config.async()) {
+            // Constructing ServerLevel also creates the per-world Spigot/Paper configuration.
+            // Keep that work on Polar's async scheduler; the version adapter hands the
+            // thread-bound registration and initialization back to the global scheduler.
+            levelFuture = TaskFutures.runAsync(PolarPaper.getPlugin(),
+                            () -> VersionUtil.createNoSaveLevel(worldCreator, config.spawn(), config.difficulty(), config.gamerules(), config.time()))
+                    .thenCompose(future -> future);
+        } else {
+            levelFuture = VersionUtil.createNoSaveLevel(worldCreator, config.spawn(), config.difficulty(), config.gamerules(), config.time());
+        }
+
+        return levelFuture
                 .whenComplete((world, ex) -> {
                     if (ex != null || world == null) {
                         if (ex == null) {

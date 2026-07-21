@@ -175,34 +175,47 @@ public class NoSaveLevelCreatorImpl implements NoSaveLevelCreator {
                 new PhantomSpawner(), new PatrolSpawner(), new CatSpawner(), new VillageSiege(), new WanderingTraderSpawner(savedDataStorage)
         );
 
-        LevelStem finalCustomStem = customStem;
         ChunkGenerator finalChunkGenerator = chunkGenerator;
         BiomeProvider finalBiomeProvider = biomeProvider;
         PaperWorldLoader.LoadedWorldData finalLoadedWorldData = loadedWorldData;
+        PreLitFallbackChunkGenerator fallbackChunkGenerator = null;
+        LevelStem finalCustomStem = customStem;
+        if (finalChunkGenerator != null && finalChunkGenerator.getClass() == PolarStreamingGenerator.class) {
+            fallbackChunkGenerator = new PreLitFallbackChunkGenerator(customStem.generator());
+            finalCustomStem = new LevelStem(customStem.type(), fallbackChunkGenerator);
+        }
+        // ServerLevel's constructor creates the per-world Spigot and Paper configuration.
+        // Keep construction on the caller thread so Config#async can move that expensive
+        // work off the server thread. Only the server-owned registration phase is scheduled
+        // back onto the global thread below.
+        ServerLevel serverLevel = new NoSaveLevel(
+                craftServer.getServer(),
+                Util.backgroundExecutor(),
+                craftServer.getServer().storageSource,
+                worldGenSettings,
+                dimensionKey,
+                finalCustomStem,
+                primaryLevelData.isDebugWorld(),
+                biomeZoomSeed,
+                creator.environment() == World.Environment.NORMAL ? list : ImmutableList.of(),
+                true,
+                actualDimension,
+                creator.environment(),
+                finalChunkGenerator,
+                finalBiomeProvider,
+                savedDataStorage,
+                finalLoadedWorldData
+        );
+        if (fallbackChunkGenerator != null) {
+            fallbackChunkGenerator.bind(serverLevel);
+            ((PolarStreamingGenerator) finalChunkGenerator).markEmptyChunkFallbackInstalled();
+        }
+
+        serverLevel.dimensionType().defaultClock().ifPresent(clock -> {
+            serverLevel.clockManager().setTotalTicks(clock, time);
+        });
+
         Supplier<World> initSupplier = () -> {
-            ServerLevel serverLevel = new NoSaveLevel(
-                    craftServer.getServer(),
-                    Util.backgroundExecutor(),
-                    craftServer.getServer().storageSource,
-                    worldGenSettings,
-                    dimensionKey,
-                    finalCustomStem,
-                    primaryLevelData.isDebugWorld(),
-                    biomeZoomSeed,
-                    creator.environment() == World.Environment.NORMAL ? list : ImmutableList.of(),
-                    true,
-                    actualDimension,
-                    creator.environment(),
-                    finalChunkGenerator,
-                    finalBiomeProvider,
-                    savedDataStorage,
-                    finalLoadedWorldData
-            );
-
-            serverLevel.dimensionType().defaultClock().ifPresent(clock -> {
-                serverLevel.clockManager().setTotalTicks(clock, time);
-            });
-
             craftServer.getServer().addLevel(serverLevel); // Paper - Put world into worldlist before initing the world; move up
             craftServer.getServer().initWorld(serverLevel, null);
             // Paper - Put world into worldlist before initing the world; move up

@@ -10,14 +10,20 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.TextComponent;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.World;
+import org.bukkit.generator.WorldInfo;
+import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 import org.joml.Vector3i;
+
+import java.util.Random;
 
 public class PolarStreamingGenerator extends PolarGenerator {
     private Short version = null;
     private Integer dataVersion = null;
     private byte[] userData = new byte[0];
     private boolean deferLevelPreparation;
+    private volatile boolean emptyChunkFallbackInstalled;
+    private volatile boolean emptyChunkFallbackEnabled;
     public PolarStreamingGenerator(Config config, PolarSource source, PolarWorldAccess worldAccess) {
         super(config, source, worldAccess);
     }
@@ -53,6 +59,28 @@ public class PolarStreamingGenerator extends PolarGenerator {
 
     public void deferLevelPreparation(boolean deferLevelPreparation) {
         this.deferLevelPreparation = deferLevelPreparation;
+    }
+
+    /**
+     * Enables Polar's internal, pre-lit empty chunk fallback after the saved
+     * chunks have been installed. The version adapter supplies the matching
+     * NMS generator delegate.
+     */
+    public void enableEmptyChunkFallback() {
+        this.emptyChunkFallbackEnabled = true;
+    }
+
+    /**
+     * Called by a version adapter after it has replaced Paper's vanilla noise
+     * delegate with Polar's empty chunk fallback.
+     */
+    public void markEmptyChunkFallbackInstalled() {
+        this.emptyChunkFallbackInstalled = true;
+    }
+
+    @Override
+    public boolean shouldGenerateNoise(@NotNull WorldInfo worldInfo, @NotNull Random random, int chunkX, int chunkZ) {
+        return this.emptyChunkFallbackEnabled && this.emptyChunkFallbackInstalled;
     }
 
     public void setDataVersion(Integer dataVersion) {

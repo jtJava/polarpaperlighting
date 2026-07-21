@@ -225,25 +225,39 @@ public class NoSaveLevelCreatorImpl implements NoSaveLevelCreator {
 
         ChunkGenerator finalChunkGenerator = chunkGenerator;
         BiomeProvider finalBiomeProvider = biomeProvider;
+        PreLitFallbackChunkGenerator fallbackChunkGenerator = null;
+        LevelStem finalCustomStem = customStem;
+        if (finalChunkGenerator != null && finalChunkGenerator.getClass() == PolarStreamingGenerator.class) {
+            fallbackChunkGenerator = new PreLitFallbackChunkGenerator(customStem.generator());
+            finalCustomStem = new LevelStem(customStem.type(), fallbackChunkGenerator);
+        }
+        // ServerLevel's constructor creates the per-world Spigot and Paper configuration.
+        // Keep construction on the caller thread so Config#async can move that expensive
+        // work off the server thread. Only the server-owned registration phase is scheduled
+        // back onto the global thread below.
+        ServerLevel serverLevel = new NoSaveLevel(
+                craftServer.getServer(),
+                craftServer.getServer().executor,
+                levelStorageAccess,
+                primaryLevelData,
+                dimensionKey,
+                finalCustomStem,
+                primaryLevelData.isDebugWorld(),
+                i,
+                creator.environment() == World.Environment.NORMAL ? list : ImmutableList.of(),
+                true,
+                craftServer.getServer().overworld().getRandomSequences(),
+                creator.environment(),
+                finalChunkGenerator, finalBiomeProvider
+        );
+        if (fallbackChunkGenerator != null) {
+            fallbackChunkGenerator.bind(serverLevel);
+            ((PolarStreamingGenerator) finalChunkGenerator).markEmptyChunkFallbackInstalled();
+        }
+
+        serverLevel.setDayTime(time);
+
         Supplier<World> initSupplier = () -> {
-            ServerLevel serverLevel = new NoSaveLevel(
-                    craftServer.getServer(),
-                    craftServer.getServer().executor,
-                    levelStorageAccess,
-                    primaryLevelData,
-                    dimensionKey,
-                    customStem,
-                    primaryLevelData.isDebugWorld(),
-                    i,
-                    creator.environment() == World.Environment.NORMAL ? list : ImmutableList.of(),
-                    true,
-                    craftServer.getServer().overworld().getRandomSequences(),
-                    creator.environment(),
-                    finalChunkGenerator, finalBiomeProvider
-            );
-
-            serverLevel.setDayTime(time);
-
             craftServer.getServer().addLevel(serverLevel); // Paper - Put world into worldlist before initing the world; move up
             craftServer.getServer().initWorld(serverLevel, primaryLevelData, primaryLevelData.worldGenOptions());
             // Paper - Put world into worldlist before initing the world; move up
