@@ -159,7 +159,7 @@ public class Polar {
 
         PolarStreamingGenerator generator = new PolarStreamingGenerator(config, source, worldAccess);
         generator.deferLevelPreparation(true);
-        return createWorld(generator, worldName).thenCompose(world -> {
+        return createWorld(generator, worldName).thenComposeAsync(world -> {
             if (world == null) return CompletableFuture.completedFuture(null);
             CompletableFuture<@Nullable World> loadedWorld;
             if (worldBytes != null && worldBytes.length > 0) {
@@ -194,14 +194,14 @@ public class Polar {
         PolarStreamingGenerator generator = new PolarStreamingGenerator(config, null, worldAccess);
         generator.setUserData(polarWorld.userData());
         generator.deferLevelPreparation(true);
-        return createWorld(generator, worldName).thenCompose(world -> {
+        return createWorld(generator, worldName).thenComposeAsync(world -> {
             if (world == null) return CompletableFuture.completedFuture(null);
             ServerLevel level = ((CraftWorld) world).getHandle();
             List<CompletableFuture<Void>> futures = new ArrayList<>();
             for (PolarChunk chunk : polarWorld.chunks()) {
                 NoUnloadLevelChunk levelChunk = chunk.createLevelChunk(level);
 
-                futures.add(TaskFutures.runSync(PolarPaper.getPlugin(), () -> {
+                futures.add(TaskFutures.runRegion(PolarPaper.getPlugin(), world, chunk.x(), chunk.z(), () -> {
                     for (PolarChunk.BlockEntity blockEntity : chunk.blockEntities()) {
                         PolarStreamLoader.addBlockEntity(blockEntity, levelChunk);
                     }
@@ -218,7 +218,7 @@ public class Polar {
             }
 
             return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
-                    .thenCompose(_ -> installPreLitBoundary(world, polarWorld))
+                    .thenComposeAsync(_ -> installPreLitBoundary(world, polarWorld))
                     .thenCompose(_ -> prepareWorld(world));
         }).whenComplete((world, ex) -> {
             if (world != null) {
