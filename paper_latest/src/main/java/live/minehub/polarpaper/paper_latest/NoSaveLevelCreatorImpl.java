@@ -178,30 +178,33 @@ public class NoSaveLevelCreatorImpl implements NoSaveLevelCreator {
         ChunkGenerator finalChunkGenerator = chunkGenerator;
         BiomeProvider finalBiomeProvider = biomeProvider;
         PaperWorldLoader.LoadedWorldData finalLoadedWorldData = loadedWorldData;
+        // ServerLevel's constructor creates this world's Spigot and Paper configuration.
+        // Keep construction on the caller thread so Config#async can move that work off
+        // the server thread. Registration and initialization remain server-thread-owned.
+        ServerLevel serverLevel = new NoSaveLevel(
+                craftServer.getServer(),
+                Util.backgroundExecutor(),
+                craftServer.getServer().storageSource,
+                worldGenSettings,
+                dimensionKey,
+                finalCustomStem,
+                primaryLevelData.isDebugWorld(),
+                biomeZoomSeed,
+                creator.environment() == World.Environment.NORMAL ? list : ImmutableList.of(),
+                true,
+                actualDimension,
+                creator.environment(),
+                finalChunkGenerator,
+                finalBiomeProvider,
+                savedDataStorage,
+                finalLoadedWorldData
+        );
+
+        serverLevel.dimensionType().defaultClock().ifPresent(clock -> {
+            serverLevel.clockManager().setTotalTicks(clock, time);
+        });
+
         Supplier<World> initSupplier = () -> {
-            ServerLevel serverLevel = new NoSaveLevel(
-                    craftServer.getServer(),
-                    Util.backgroundExecutor(),
-                    craftServer.getServer().storageSource,
-                    worldGenSettings,
-                    dimensionKey,
-                    finalCustomStem,
-                    primaryLevelData.isDebugWorld(),
-                    biomeZoomSeed,
-                    creator.environment() == World.Environment.NORMAL ? list : ImmutableList.of(),
-                    true,
-                    actualDimension,
-                    creator.environment(),
-                    finalChunkGenerator,
-                    finalBiomeProvider,
-                    savedDataStorage,
-                    finalLoadedWorldData
-            );
-
-            serverLevel.dimensionType().defaultClock().ifPresent(clock -> {
-                serverLevel.clockManager().setTotalTicks(clock, time);
-            });
-
             craftServer.getServer().addLevel(serverLevel); // Paper - Put world into worldlist before initing the world; move up
             craftServer.getServer().initWorld(serverLevel, null);
             // Paper - Put world into worldlist before initing the world; move up

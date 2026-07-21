@@ -250,7 +250,19 @@ public class Polar {
                 .environment(config.environment())
                 .generator(generator);
 
-        return VersionUtil.createNoSaveLevel(worldCreator, config.spawn(), config.difficulty(), config.gamerules(), config.time())
+        CompletableFuture<@Nullable World> levelFuture;
+        if (config.async()) {
+            // ServerLevel construction creates this world's Spigot and Paper configuration.
+            // Run that per-world work asynchronously; the version adapter returns the
+            // server-owned registration and initialization phase to the global scheduler.
+            levelFuture = TaskFutures.runAsync(PolarPaper.getPlugin(),
+                            () -> VersionUtil.createNoSaveLevel(worldCreator, config.spawn(), config.difficulty(), config.gamerules(), config.time()))
+                    .thenCompose(future -> future);
+        } else {
+            levelFuture = VersionUtil.createNoSaveLevel(worldCreator, config.spawn(), config.difficulty(), config.gamerules(), config.time());
+        }
+
+        return levelFuture
                 .whenComplete((world, ex) -> {
                     if (ex != null || world == null) {
                         if (ex == null) {

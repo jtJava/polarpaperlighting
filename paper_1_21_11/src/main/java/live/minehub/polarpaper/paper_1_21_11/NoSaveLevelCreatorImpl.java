@@ -224,25 +224,28 @@ public class NoSaveLevelCreatorImpl implements NoSaveLevelCreator {
 
         ChunkGenerator finalChunkGenerator = chunkGenerator;
         BiomeProvider finalBiomeProvider = biomeProvider;
+        // ServerLevel's constructor creates this world's Spigot and Paper configuration.
+        // Keep construction on the caller thread so Config#async can move that work off
+        // the server thread. Registration and initialization remain server-thread-owned.
+        ServerLevel serverLevel = new NoSaveLevel(
+                craftServer.getServer(),
+                craftServer.getServer().executor,
+                levelStorageAccess,
+                primaryLevelData,
+                dimensionKey,
+                customStem,
+                primaryLevelData.isDebugWorld(),
+                i,
+                creator.environment() == World.Environment.NORMAL ? list : ImmutableList.of(),
+                true,
+                craftServer.getServer().overworld().getRandomSequences(),
+                creator.environment(),
+                finalChunkGenerator, finalBiomeProvider
+        );
+
+        serverLevel.setDayTime(time);
+
         Supplier<World> initSupplier = () -> {
-            ServerLevel serverLevel = new NoSaveLevel(
-                    craftServer.getServer(),
-                    craftServer.getServer().executor,
-                    levelStorageAccess,
-                    primaryLevelData,
-                    dimensionKey,
-                    customStem,
-                    primaryLevelData.isDebugWorld(),
-                    i,
-                    creator.environment() == World.Environment.NORMAL ? list : ImmutableList.of(),
-                    true,
-                    craftServer.getServer().overworld().getRandomSequences(),
-                    creator.environment(),
-                    finalChunkGenerator, finalBiomeProvider
-            );
-
-            serverLevel.setDayTime(time);
-
             craftServer.getServer().addLevel(serverLevel); // Paper - Put world into worldlist before initing the world; move up
             craftServer.getServer().initWorld(serverLevel, primaryLevelData, primaryLevelData.worldGenOptions());
             // Paper - Put world into worldlist before initing the world; move up
