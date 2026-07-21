@@ -194,7 +194,7 @@ public class Polar {
             for (PolarChunk chunk : polarWorld.chunks()) {
                 NoUnloadLevelChunk levelChunk = chunk.createLevelChunk(level);
 
-                futures.add(TaskFutures.runSync(PolarPaper.getPlugin(), () -> {
+                futures.add(TaskFutures.runRegion(PolarPaper.getPlugin(), world, chunk.x(), chunk.z(), () -> {
                     for (PolarChunk.BlockEntity blockEntity : chunk.blockEntities()) {
                         PolarStreamLoader.addBlockEntity(blockEntity, levelChunk);
                     }
